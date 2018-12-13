@@ -23,7 +23,8 @@ func checkSorted(result: [Int32]) {
         if (item < prev) {
             print(String(format: "at [%d]: %d < %d", idx, item, prev))
         }
-        
+        assert(item >= prev)
+
         /**
          * Don't print too many items
          */
@@ -38,8 +39,8 @@ func checkSorted(result: [Int32]) {
 
 func runMetal() {
     print("Hello, World!")
-    let dataLength = 1 << 8
-    
+    let dataLength = 1 << 21
+
     /**
       * Sanity check: ensure the input size is the power of two.
       */
@@ -47,46 +48,52 @@ func runMetal() {
         print("Data size must be a power of two. Requested: ", dataLength)
         return
     }
-    
+
     var input = [Int32](repeating:0, count: dataLength)
     for i in (0...(dataLength - 1)) {
         //input[i] = Int32(2 * dataLength) - i;
         input[i] = Int32(arc4random_uniform(1024))
     }
     let dataByteLength = dataLength * MemoryLayout.size(ofValue: input[0])
-    
+
     /**
      * The buffer to store the "stage" and "pass" indices (arguments for the kernel).
      */
     var paramData = [Int32](repeating:0, count: 2)
-    
+
+    //let devices = MTLCopyAllDevices()
+    //let device = Optional.some(devices[0])
+    //NSLog("Device \(device)")
+
     let device = MTLCreateSystemDefaultDevice()
     print("Metal Device:", device as Any)
-    
+
     let defaultLibrary = device?.newDefaultLibrary()
-    let sigmoidFunction = defaultLibrary?.makeFunction(name: "bitonic")
-    
+    let sortFunction = defaultLibrary?.makeFunction(name: "bitonic")
+
     let cmdQueue = device?.makeCommandQueue()
-    
+
     let threadsPerGroup = MTLSize(width: 32, height: 1, depth: 1)
     let numThreadGroups = MTLSize(width: dataLength / threadsPerGroup.width, height: 1, depth: 1)
-    
-    let inBuffer = device?.makeBuffer(bytes: &input, length:dataByteLength, options: MTLResourceOptions())
-    let paramBuffer = device?.makeBuffer(bytes: &paramData, length:byteSize(array:paramData), options: MTLResourceOptions.storageModeManaged)
-    
+
     var pipeline : MTLComputePipelineState? = nil
     do {
-        pipeline = try device?.makeComputePipelineState(function: sigmoidFunction!)
+        pipeline = try device?.makeComputePipelineState(function: sortFunction!)
     }
     catch {
-        print("ffuu")
+        print("failed to create the compute pipeline")
         return
     }
-    
+
+    let t_start = time(nil)
+    let inBuffer = device?.makeBuffer(bytes: &input, length:dataByteLength,
+                                      options: MTLResourceOptions.storageModeShared)
+    let paramBuffer = device?.makeBuffer(bytes: &paramData, length:byteSize(array:paramData), options: MTLResourceOptions.storageModeManaged)
+
     /*
      This roughly does the following.
      The "dipatchThreadgroups" acts as the inner loop distributing the job across GPU threads.
-     
+
      for (int k = 2; k <= NUM_ITEMS; k <<= 1) {
          for (int j = k >> 1; j > 0; j >>= 1) {
              for (int i = 0; i < NUM_ITEMS; i++) {
@@ -95,18 +102,18 @@ func runMetal() {
          }
      }
  */
-    
+
     var stage = 2
     var stepInStage = 0
     while stage <= dataLength {
         stepInStage = stage >> 1
         while stepInStage > 0 {
-            
+
             paramData[0] = Int32(stepInStage)
             paramData[1] = Int32(stage)
             memcpy(paramBuffer?.contents(), &paramData, byteSize(array: paramData))
             paramBuffer?.didModifyRange(NSMakeRange(0, byteSize(array: paramData)))
-            
+
             let cmdBuffer = cmdQueue?.makeCommandBuffer()
             let cmdEncoder = cmdBuffer?.makeComputeCommandEncoder()
             cmdEncoder?.setComputePipelineState(pipeline!)
@@ -125,7 +132,10 @@ func runMetal() {
     let data = NSData(bytesNoCopy: inBuffer!.contents(), length: dataByteLength, freeWhenDone: false)
     var result = [Int32](repeating:0, count: dataLength)
     data.getBytes(&result, length: dataByteLength)
-    
+    let t_end = time(nil)
+    let t_diff = difftime(t_end, t_start)
+    print("sorting run time: " + String(t_diff))
+
     NSLog("Done")
     checkSorted(result: result)
 }
